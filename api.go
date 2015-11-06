@@ -106,7 +106,7 @@ func newUser(w http.ResponseWriter, r *http.Request, _ httprouter.Params) {
 	w.Write(data)
 }
 
-// Autheticate User
+// Authenticate User
 func authUser(w http.ResponseWriter, r *http.Request, _ httprouter.Params) {
 	buf := new(bytes.Buffer)
 	auth := &struct {
