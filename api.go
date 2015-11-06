@@ -45,11 +45,16 @@ func authUser(w http.ResponseWriter, r *http.Request, _ httprouter.Params) {
 		writeJsonERR(w, 400, "User name or password not found")
 	}
 
+	sessionKey, err1 := GetSessionKey(id)
 	userAuth := &struct {
 		Error     string
 		UserID    int
 		SessionID string
-	}{"", id, "INVALID"}
+	}{"", id, sessionKey}
+
+	if err1 != nil {
+		panic(err1)
+	}
 
 	data, err := json.Marshal(userAuth)
 	if err != nil {
@@ -82,6 +87,8 @@ func newUser(w http.ResponseWriter, r *http.Request, _ httprouter.Params) {
 	buf.ReadFrom(r.Body)
 	err := json.Unmarshal(buf.Bytes(), newUser)
 	if err != nil {
+		fmt.Println(string(buf.Bytes()))
+		fmt.Println(err)
 		writeJsonERR(w, 400, "Invalid JSON!")
 		return
 	}
@@ -115,11 +122,17 @@ func newUser(w http.ResponseWriter, r *http.Request, _ httprouter.Params) {
 		writeJsonERR(w, 500, "Unable to create user!")
 		return
 	}
+
+	sessionKey, err1 := GetSessionKey(userID)
+	if err1 != nil {
+		sessionKey = "INVALID"
+	}
+
 	userInfo := &struct {
 		Error   string
 		UserId  int
 		Session string
-	}{"", userID, "INVALID"}
+	}{"", userID, sessionKey}
 	data, err := json.Marshal(userInfo)
 	if err != nil {
 		panic(err)
