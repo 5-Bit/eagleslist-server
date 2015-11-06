@@ -14,55 +14,21 @@ import (
 	_ "github.com/lib/pq"
 )
 
-// Autheticate User
-func authUser(w http.ResponseWriter, r *http.Request, _ httprouter.Params) {
+// Unmarshal JSON
+func decodeJSON(w http.ResponseWriter, r *http.Request, o interface{}) error {
 	buf := new(bytes.Buffer)
-	auth := &struct {
-		UserHandle string
-		Password   string
-	}{}
 	buf.ReadFrom(r.Body)
-	err := json.Unmarshal(buf.Bytes(), auth)
+	err := json.Unmarshal(buf.Bytes(), o)
 	if err != nil {
-		writeJsonERR(w, 400, "Invalid JSON!")
-		return
-	}
-	var passBuf []byte
-	var id int
-	err = db.QueryRow(`Select passwordbcrypt, id from users where email = $1 or handle = $1`, auth.UserHandle).Scan(&passBuf, &id)
-	if err == sql.ErrNoRows {
-		err = bcrypt.CompareHashAndPassword(passBuf, []byte(auth.Password))
-		writeJsonERR(w, 400, "User name or password not found")
-		return
-	}
-	if err != nil {
+		fmt.Println(string(buf.Bytes()))
 		fmt.Println(err)
-		writeJsonERR(w, 500, "Server error!")
-		return
+		writeJsonERR(w, 400, "Invalid JSON!")
+		return err
 	}
-	err = bcrypt.CompareHashAndPassword(passBuf, []byte(auth.Password))
-	if err != nil {
-		writeJsonERR(w, 400, "User name or password not found")
-	}
-
-	sessionKey, err1 := GetSessionKey(id)
-	userAuth := &struct {
-		Error     string
-		UserID    int
-		SessionID string
-	}{"", id, sessionKey}
-
-	if err1 != nil {
-		panic(err1)
-	}
-
-	data, err := json.Marshal(userAuth)
-	if err != nil {
-		panic(err)
-	}
-	w.Write(data)
+	return nil
 }
 
+// Write an error as a JSON object
 func writeJsonERR(w http.ResponseWriter, Header int, message string) {
 	w.WriteHeader(Header)
 	errObj := &struct {
@@ -134,6 +100,55 @@ func newUser(w http.ResponseWriter, r *http.Request, _ httprouter.Params) {
 		Session string
 	}{"", userID, sessionKey}
 	data, err := json.Marshal(userInfo)
+	if err != nil {
+		panic(err)
+	}
+	w.Write(data)
+}
+
+// Autheticate User
+func authUser(w http.ResponseWriter, r *http.Request, _ httprouter.Params) {
+	buf := new(bytes.Buffer)
+	auth := &struct {
+		UserHandle string
+		Password   string
+	}{}
+	buf.ReadFrom(r.Body)
+	err := json.Unmarshal(buf.Bytes(), auth)
+	if err != nil {
+		writeJsonERR(w, 400, "Invalid JSON!")
+		return
+	}
+	var passBuf []byte
+	var id int
+	err = db.QueryRow(`Select passwordbcrypt, id from users where email = $1 or handle = $1`, auth.UserHandle).Scan(&passBuf, &id)
+	if err == sql.ErrNoRows {
+		err = bcrypt.CompareHashAndPassword(passBuf, []byte(auth.Password))
+		writeJsonERR(w, 400, "User name or password not found")
+		return
+	}
+	if err != nil {
+		fmt.Println(err)
+		writeJsonERR(w, 500, "Server error!")
+		return
+	}
+	err = bcrypt.CompareHashAndPassword(passBuf, []byte(auth.Password))
+	if err != nil {
+		writeJsonERR(w, 400, "User name or password not found")
+	}
+
+	sessionKey, err1 := GetSessionKey(id)
+	userAuth := &struct {
+		Error     string
+		UserID    int
+		SessionID string
+	}{"", id, sessionKey}
+
+	if err1 != nil {
+		panic(err1)
+	}
+
+	data, err := json.Marshal(userAuth)
 	if err != nil {
 		panic(err)
 	}
@@ -239,6 +254,21 @@ func emitUsers(w http.ResponseWriter, rows *sql.Rows) {
 }
 
 func userByID(w http.ResponseWriter, r *http.Request, p httprouter.Params) {
+	auth := &struct {
+		SessionID string
+	}{}
+
+	if err := decodeJSON(w, r, auth); err != nil {
+		return
+	}
+
+	// Check that authentication is working.
+	if ok, err := CheckSessionsKey(auth.SessionID); !ok || err != nil {
+		fmt.Println(err)
+		writeJsonERR(w, 400, "Invalid auth token")
+		return
+	}
+
 	id, err := strconv.Atoi(p[0].Value)
 	if err != nil {
 		w.WriteHeader(500)
@@ -258,6 +288,21 @@ func userByID(w http.ResponseWriter, r *http.Request, p httprouter.Params) {
 
 // Search through the users table by handle
 func searchUsers(w http.ResponseWriter, r *http.Request, p httprouter.Params) {
+	auth := &struct {
+		SessionID string
+	}{}
+
+	if err := decodeJSON(w, r, auth); err != nil {
+		return
+	}
+
+	// Check to see if this user has
+	if ok, err := CheckSessionsKey(auth.SessionID); !ok || err != nil {
+		fmt.Println(err)
+		writeJsonERR(w, 400, "Invalid auth token")
+		return
+	}
+
 	userName := strings.Replace(p[0].Value, "*", "%", -1)
 	fmt.Println(userName)
 	rows, err := db.Query(`Select handle, email, biography, imageURL 
