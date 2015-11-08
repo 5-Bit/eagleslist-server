@@ -11,6 +11,10 @@ import (
 	"strconv"
 	"strings"
 
+	// FIXME: This import path will currently only work on this server.
+	"yumaikas/eaglelist/eagleslist-server/templates"
+	email "yumaikas/eaglelist/eagleslist-server/validation"
+
 	_ "github.com/lib/pq"
 )
 
@@ -59,8 +63,8 @@ func newUser(w http.ResponseWriter, r *http.Request, _ httprouter.Params) {
 		return
 	}
 
-	if !(strings.HasSuffix(newUser.Email, "fgcu.edu") ||
-		strings.HasSuffix(newUser.Email, "eagle.fgcu.edu")) {
+	if !(strings.HasSuffix(newUser.Email, "@fgcu.edu") ||
+		strings.HasSuffix(newUser.Email, "@eagle.fgcu.edu")) {
 		writeJsonERR(w, 400, "Email needs to be from FGCU!")
 		return
 	}
@@ -88,6 +92,26 @@ func newUser(w http.ResponseWriter, r *http.Request, _ httprouter.Params) {
 		writeJsonERR(w, 500, "Unable to create user!")
 		return
 	}
+	// Prepare for the email validation.
+	validation, err1 := GenerateRandomString()
+	_, err = db.Exec(`
+	 Insert into emailvalidation (userid, validationtoken, isvalidated) VALUES ($1, $2, false);
+	`, userID, validation)
+	if err != nil {
+		fmt.Println(err)
+		writeJsonERR(w, 500, "Unknown error!")
+		return
+	}
+
+	// Populate the confirmation email.
+	emailBody, err := templates.GetConfirmationEmail(newUser.UserName, newUser.Email, validation)
+	if err != nil {
+		fmt.Println(err)
+		writeJsonERR(w, 500, "Uknown(sic) error!")
+		return
+	}
+	// Queue up the message send to be processed.
+	email.SendMessage(emailBody, newUser.UserName)
 
 	sessionKey, err1 := GetSessionKey(userID)
 	if err1 != nil {
@@ -135,6 +159,7 @@ func authUser(w http.ResponseWriter, r *http.Request, _ httprouter.Params) {
 	err = bcrypt.CompareHashAndPassword(passBuf, []byte(auth.Password))
 	if err != nil {
 		writeJsonERR(w, 400, "User name or password not found")
+		return
 	}
 
 	sessionKey, err1 := GetSessionKey(id)
@@ -212,10 +237,15 @@ func listingsByID(w http.ResponseWriter, r *http.Request, p httprouter.Params) {
 	emitListings(w, rows)
 }
 
+type listingResponse struct {
+	User
+	Listing
+}
+
 func emitListings(w http.ResponseWriter, rows *sql.Rows) {
-	listings := make([]Listing, 0)
+	listings := make([]listingResponse, 0)
 	for rows.Next() {
-		listing := Listing{}
+		listing := listingResponse{}
 		rows.Scan(
 			&listing.ListingID,
 			&listing.Handle,
@@ -228,7 +258,7 @@ func emitListings(w http.ResponseWriter, rows *sql.Rows) {
 			&listing.EndDate)
 		listings = append(listings, listing)
 	}
-	data, err := json.Marshal(struct{ Listings []Listing }{listings})
+	data, err := json.Marshal(struct{ Listings []listingResponse }{listings})
 	if err != nil {
 		fmt.Print(err)
 		w.WriteHeader(500)
@@ -237,7 +267,14 @@ func emitListings(w http.ResponseWriter, rows *sql.Rows) {
 	w.Write(data)
 }
 
-func emitUsers(w http.ResponseWriter, rows *sql.Rows) {
+type EMIT_TYPE int
+
+const (
+	EMIT_MANY EMIT_TYPE = 1
+	EMIT_ONE  EMIT_TYPE = 0
+)
+
+func emitUsers(w http.ResponseWriter, rows *sql.Rows, em EMIT_TYPE) {
 	users := make([]User, 0)
 	for rows.Next() {
 		user := User{}
@@ -245,10 +282,69 @@ func emitUsers(w http.ResponseWriter, rows *sql.Rows) {
 		users = append(users, user)
 	}
 	rows.Close()
-	data, err := json.Marshal(struct{ Users []User }{users})
+	var data []byte
+	var err error
+	if em == EMIT_MANY {
+		data, err = json.Marshal(struct{ Users []User }{users})
+	} else {
+		data, err = json.Marshal(users[0])
+	}
 	// TODO: clean this up.
 	if err != nil {
-		panic(err)
+		writeJsonERR(w, 500, "Ukown error")
+	}
+	w.Write(data)
+}
+
+// Create a new listing.
+func newListing(w http.ResponseWriter, r *http.Request, p httprouter.Params) {
+	req := &struct {
+		SessionID string
+		Listing   Listing
+	}{}
+
+	if err := decodeJSON(w, r, req); err != nil {
+		writeJsonERR(w, 400, "Invalid JSON")
+		return
+	}
+
+	if ok, err := CheckSessionsKey(req.SessionID); !ok || err != nil {
+		writeJsonERR(w, 400, "Unauthorized")
+		return
+	}
+
+	var listingID int
+	err := db.QueryRow(`
+	Insert into listings (
+		oldversionid, newversionid, creatorid, content,
+		createdate, title, price
+	) values (
+		-1,         -- oldversionid
+		-1,         -- newversionid
+		$1,         -- creatorid
+		$2,         -- content
+		DATE 'NOW', -- createdate
+		$3,         -- title
+		$4          -- price
+	)
+	RETURNING ID
+	`, req.Listing.UserID,
+		req.Listing.Content,
+		req.Listing.Title,
+		req.Listing.Price).Scan(&listingID)
+
+	if err != nil {
+		writeJsonERR(w, 500, "UNKNOWN ERROR!")
+		return
+	}
+	retVal := &struct {
+		Error  string
+		PostId int
+	}{"", listingID}
+	data, err := json.Marshal(retVal)
+	if err != nil {
+		writeJsonERR(w, 500, "UKNOWN error...")
+		return
 	}
 	w.Write(data)
 }
@@ -259,6 +355,7 @@ func userByID(w http.ResponseWriter, r *http.Request, p httprouter.Params) {
 	}{}
 
 	if err := decodeJSON(w, r, auth); err != nil {
+		writeJsonERR(w, 400, "Invalid JSON")
 		return
 	}
 
@@ -271,19 +368,21 @@ func userByID(w http.ResponseWriter, r *http.Request, p httprouter.Params) {
 
 	id, err := strconv.Atoi(p[0].Value)
 	if err != nil {
-		w.WriteHeader(500)
+		fmt.Println(err)
+		writeJsonERR(w, 500, "Invalid user ID")
 		return
 	}
 	fmt.Println(id)
 
 	rows, err := db.Query(`Select handle, email, biography, imageURL
-	from users,
-	where id = $1`)
+	from users
+	where id = $1`, id)
 	if err != nil {
-		w.WriteHeader(500)
+		fmt.Println(err)
+		writeJsonERR(w, 500, "Unable to load user from database!")
 		return
 	}
-	emitUsers(w, rows)
+	emitUsers(w, rows, EMIT_ONE)
 }
 
 // Search through the users table by handle
@@ -312,5 +411,5 @@ func searchUsers(w http.ResponseWriter, r *http.Request, p httprouter.Params) {
 	if err != nil {
 		panic(err)
 	}
-	emitUsers(w, rows)
+	emitUsers(w, rows, EMIT_MANY)
 }

@@ -54,7 +54,7 @@ func GetSessionKey(userID int) (string, error) {
 	set 
 		cookieInfo = $1,
 		valid_til = DATE 'NOW' + INTERVAL '1 WEEK'
-	where userID = $1`, key, userID)
+	where userID = $2`, key, userID)
 	if err != nil {
 		fmt.Println(err)
 		return "", err
