@@ -308,9 +308,11 @@ func newListing(w http.ResponseWriter, r *http.Request, p httprouter.Params) {
 		return
 	}
 
-	if ok, err := CheckSessionsKey(req.SessionID); !ok || err != nil {
+	if id, ok, err := CheckSessionsKey(req.SessionID); !ok || err != nil {
 		writeJsonERR(w, 400, "Unauthorized")
 		return
+	} else {
+		req.Listing.UserID = id
 	}
 
 	var listingID int
@@ -323,7 +325,7 @@ func newListing(w http.ResponseWriter, r *http.Request, p httprouter.Params) {
 		-1,         -- newversionid
 		$1,         -- creatorid
 		$2,         -- content
-		DATE 'NOW', -- createdate
+		TIMESTAMPTZ 'NOW', -- createdate
 		$3,         -- title
 		$4          -- price
 	)
@@ -349,6 +351,7 @@ func newListing(w http.ResponseWriter, r *http.Request, p httprouter.Params) {
 	w.Write(data)
 }
 
+// Get user by ID
 func userByID(w http.ResponseWriter, r *http.Request, p httprouter.Params) {
 	auth := &struct {
 		SessionID string
@@ -360,7 +363,7 @@ func userByID(w http.ResponseWriter, r *http.Request, p httprouter.Params) {
 	}
 
 	// Check that authentication is working.
-	if ok, err := CheckSessionsKey(auth.SessionID); !ok || err != nil {
+	if _, ok, err := CheckSessionsKey(auth.SessionID); !ok || err != nil {
 		fmt.Println(err)
 		writeJsonERR(w, 400, "Invalid auth token")
 		return
@@ -396,7 +399,7 @@ func searchUsers(w http.ResponseWriter, r *http.Request, p httprouter.Params) {
 	}
 
 	// Check to see if this user has
-	if ok, err := CheckSessionsKey(auth.SessionID); !ok || err != nil {
+	if _, ok, err := CheckSessionsKey(auth.SessionID); !ok || err != nil {
 		fmt.Println(err)
 		writeJsonERR(w, 400, "Invalid auth token")
 		return
