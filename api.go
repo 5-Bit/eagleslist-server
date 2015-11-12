@@ -12,8 +12,8 @@ import (
 	"strings"
 
 	// FIXME: This import path will currently only work on this server.
-	"yumaikas/eaglelist/eagleslist-server/templates"
-	email "yumaikas/eaglelist/eagleslist-server/validation"
+	"github.com/5-bit/eagleslist-server/templates"
+	email "github.com/5-bit/eagleslist-server/validation"
 
 	_ "github.com/lib/pq"
 )
