@@ -51,6 +51,16 @@ type User struct {
 	ImageURL string
 }
 
+type DirectMessage struct {
+	ID              int
+	UserID          int
+	Title           string
+	Content         string
+	ParentListingID int
+	CreateDate      time.Time
+	EndDate         time.Time
+}
+
 type Listing struct {
 	ListingID  int
 	UserID     int
@@ -68,13 +78,21 @@ func main() {
 	fmt.Println("Starting server")
 	router.ServeFiles("/static/*filepath", http.Dir(config.StaticRoot))
 	router.HandlerFunc("GET", "/apidb/users", loadDataFromDB)
-	router.PUT("/apidb/users/id/:id", userByID)
-	router.GET("/apidb/users/handle/:user", searchUsers)
+	router.GET("/verify/:verifyToken", verifyUser)
 	router.GET("/apidb/listings", allListings)
 	router.GET("/apidb/listings/:id/id", listingsByID)
+	router.POST("/apidb/listings/new", newListing)
+
+	// TODO:  Fix these routes
+	router.POST("/apidb/listing/:od/adddirectmessage", directMessageToListing)
+	router.GET("/apidb/listing/:ud/getdirectmessages", getDirectMessagesForListing)
+	// end routes that need fixing
+
+	router.PUT("/apidb/users/id/:id", userByID)
+	router.GET("/apidb/users/handle/:user", searchUsers)
 	router.POST("/apidb/users/new", newUser)
 	router.PUT("/apidb/users/auth", authUser)
-	router.POST("/apidb/listings/new", newListing)
+	router.PUT("/apidb/users/logout", invalidateSession)
 	//router.PUT("/apidb/validation/resend/", resendAPI)
 	router.GET("/", index)
 
@@ -87,15 +105,17 @@ func index(w http.ResponseWriter, r *http.Request, _ httprouter.Params) {
 
   GET "/static/*filepath" -> Old hard-coded api, other static assets
 
-  GET "/apidb/users" -> returns a list of all users
-  PUT "/apidb/users/id/:id" -> returns a list of all users
+  *Deprecated* GET "/apidb/users" -> returns a list of all users
+  PUT "/apidb/users/id/:id" -> returns the user that has that ID, or an error.
   GET "/apidb/users/handle/:user" -> searched for users that have handle's matchin said patter.
   PUT "/apidb/users/auth" -> PUT a JSON object with "UserHandle" and "Password" fields, will return an object that has an "Error" key, and optionally an "UserID" and "SessionID" keys
+  PUT "/apidb/users/logout" -> PUT a JSON object with the session key to invalidate that session key.
   POST "/apidb/users/new" -> Create a new users with the specified information. Returns the users's ID and a session cookie
 
   GET "/apidb/listings" -> Returns a list of all listings 
   GET "/apidb/listings/:id/id" -> Returns a list of a single listing, based on the id in the URL.
   POST "/apidb/listings/new" -> Create a listing from the JSON passed to it, return the id for the listing.
+  
 	`)
 }
 

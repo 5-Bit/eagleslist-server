@@ -26,7 +26,7 @@ var emailVerificationTemplate = `<html>
                 <p> Please click on the following link or copy and paste it into your browser to complete the email verification process:
             
                     <b>
-                        <a href="sourcekitserviceterminated.com/verify/{{ .LinkID }}">Verify my account.</a>
+					<a href="https://sourcekitserviceterminated.com/verify/{{ .LinkID }}">Verify my account.</a>
                     </b>
                 </p>
                 <p>You may begin creating posts and replying to other listings once your verification is complete.</p>
@@ -40,7 +40,7 @@ func init() {
 	emailT = template.Must(template.New("email").Parse(emailVerificationTemplate))
 }
 
-func GetEmail(username, email, linkID string) (string, error) {
+func GetConfirmationEmail(username, email, linkID string) (string, error) {
 	buf := new(bytes.Buffer)
 	err := emailT.Execute(buf, &struct {
 		UserName string

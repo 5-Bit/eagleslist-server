@@ -111,7 +111,7 @@ func newUser(w http.ResponseWriter, r *http.Request, _ httprouter.Params) {
 		return
 	}
 	// Queue up the message send to be processed.
-	email.SendMessage(emailBody, newUser.UserName)
+	email.SendMessage(emailBody, newUser.Email)
 
 	sessionKey, err1 := GetSessionKey(userID)
 	if err1 != nil {
@@ -178,6 +178,82 @@ func authUser(w http.ResponseWriter, r *http.Request, _ httprouter.Params) {
 		panic(err)
 	}
 	w.Write(data)
+}
+
+func invalidateSession(w http.ResponseWriter, r *http.Request, p httprouter.Params) {
+	// TODO: finish this code
+	auth := &struct {
+		SessionID string
+	}{}
+
+	if err := decodeJSON(w, r, auth); err != nil {
+		writeJsonERR(w, 400, "Invalid JSON")
+		return
+	}
+	_, err := db.Exec(`
+	Update sessions
+	set valid_til = TIMESTAMPTZ 'NOW' + INTERVAL '-1 MINUTE'
+	where cookieinfo = $1`, auth.SessionID)
+	if err != nil {
+		fmt.Println(err)
+		writeJsonERR(w, 500, "ukerr")
+		return
+	}
+	w.WriteHeader(204)
+}
+
+func verifyUser(w http.ResponseWriter, r *http.Request, p httprouter.Params) {
+	verificationToken := p[0].Value
+	var handle string
+	var email string
+	var userID int
+	var isValidated bool
+	err := db.QueryRow(`
+	 Select userid, handle, email, isValidated
+	 from emailvalidation 
+	 inner join users on users.id = emailvalidation.userid 
+	 	and validationtoken = $1;
+	`, verificationToken).Scan(&userID, &handle, &email, &isValidated)
+	if err == sql.ErrNoRows {
+		w.WriteHeader(404)
+		fmt.Fprint(w, "User not found")
+		return
+	}
+	if isValidated {
+		pageData, err := templates.GetLandingPage(handle, email)
+		if err != nil {
+			w.WriteHeader(500)
+			fmt.Fprint(w, "unknown error........")
+		}
+		fmt.Fprint(w, pageData)
+		return
+	}
+	if err != nil {
+		fmt.Println(err)
+		w.WriteHeader(500)
+		fmt.Fprint(w, "Unknown error")
+		return
+	}
+	_, err = db.Exec(`
+	Update emailvalidation
+	set 
+		isValidated = true
+	where userid = $1;
+	`, userID)
+	if err != nil {
+		fmt.Println(err)
+		w.WriteHeader(500)
+		fmt.Fprint(w, "Unknown error..")
+		return
+	}
+	pageData, err := templates.GetVerificationPage(handle, email)
+	if err != nil {
+		fmt.Println(err)
+		w.WriteHeader(500)
+		fmt.Fprint(w, "Unknown error....")
+		return
+	}
+	fmt.Fprint(w, pageData)
 }
 
 // TODO: When creating login requests,
@@ -336,16 +412,167 @@ func newListing(w http.ResponseWriter, r *http.Request, p httprouter.Params) {
 		req.Listing.Price).Scan(&listingID)
 
 	if err != nil {
+		fmt.Println(err)
 		writeJsonERR(w, 500, "UNKNOWN ERROR!")
 		return
 	}
 	retVal := &struct {
 		Error  string
-		PostId int
+		PostID int
 	}{"", listingID}
 	data, err := json.Marshal(retVal)
 	if err != nil {
 		writeJsonERR(w, 500, "UKNOWN error...")
+		return
+	}
+	w.Write(data)
+}
+
+// Attach a DM to a listing.
+// /apidb/listings/:id/directmessage
+func directMessageToListing(w http.ResponseWriter, r *http.Request, p httprouter.Params) {
+	parentListingID, err := strconv.Atoi(p[0].Value)
+	if err != nil {
+		writeJsonERR(w, 400, "Invalid listing ID in URL")
+		return
+	}
+	req := &struct {
+		SessionID     string
+		DirectMessage DirectMessage
+	}{}
+
+	if err := decodeJSON(w, r, req); err != nil {
+		writeJsonERR(w, 400, "Invalid JSON")
+		return
+	}
+
+	if id, ok, err := CheckSessionsKey(req.SessionID); !ok || err != nil {
+		writeJsonERR(w, 400, "Unauthorized")
+		return
+	} else {
+		req.DirectMessage.UserID = id
+	}
+
+	err = db.QueryRow(`
+	Select id from listings where id = $1;
+	`, parentListingID).Scan(&parentListingID)
+	if err == sql.ErrNoRows {
+		writeJsonERR(w, 400, "Listing does not exist")
+		return
+	}
+	if err != nil {
+		writeJsonERR(w, 500, "UK ERR")
+	}
+
+	var listingID int
+	err = db.QueryRow(`
+	Insert into directmessages (
+		oldversionid, newversionid, creatorid, content,
+		createdate, title, parent_listing_id 
+	) values (
+		-1,         -- oldversionid
+		-1,         -- newversionid
+		$1,         -- creatorid
+		$2,         -- content
+		TIMESTAMPTZ 'NOW', -- createdate
+		$3,         -- title
+		$4          -- parent_listing_id
+	)
+	RETURNING ID
+	`, req.DirectMessage.UserID,
+		req.DirectMessage.Content,
+		req.DirectMessage.Title,
+		parentListingID).Scan(&listingID)
+
+	if err != nil {
+		fmt.Println(err)
+		writeJsonERR(w, 500, "UNKNOWN ERROR!!")
+		return
+	}
+	retVal := &struct {
+		Error string
+	}{""}
+	data, err := json.Marshal(retVal)
+	if err != nil {
+		writeJsonERR(w, 500, "UKNOWN error...")
+		return
+	}
+	w.Write(data)
+}
+
+// /apidb/listings/:id/getdirectmessages
+func getDirectMessagesForListing(w http.ResponseWriter, r *http.Request, p httprouter.Params) {
+	parentListingID, err := strconv.Atoi(p[0].Value)
+	if err != nil {
+		writeJsonERR(w, 400, "Invalid listing ID in URL")
+		return
+	}
+	auth := &struct {
+		SessionID string
+	}{}
+
+	if err := decodeJSON(w, r, auth); err != nil {
+		writeJsonERR(w, 400, "Invalid JSON")
+		return
+	}
+
+	{
+		// Check to make sure that the listing that all the direct messages are
+		// being listed for belongs to the user in question.
+		var userID int
+		var ok bool
+		var err error
+		var listingOwnerid int
+		err = db.QueryRow(` Select creatorid from listings where id = $1`,
+			parentListingID).Scan(&listingOwnerid)
+		// Check that authentication is working.
+		if userID, ok, err = CheckSessionsKey(auth.SessionID); !ok || err != nil {
+			fmt.Println(err)
+			writeJsonERR(w, 400, "Invalid auth token")
+			return
+		}
+		if userID != listingOwnerid {
+			writeJsonERR(w, 500, "You can't look at the DMs for someone elses listing!")
+			return
+		}
+	}
+	rows, err := db.Query(`
+		Select
+			id, 
+			creatorID,
+			content,
+			createDate,
+			enddate,
+			title,
+		from directmessages
+		where parent_listing_id = $1
+		`, parentListingID)
+	if err != nil {
+		writeJsonERR(w, 500, "Unknown error!!!")
+		return
+	}
+
+	directMessages := make([]DirectMessage, 0)
+	for rows.Next() {
+		dm := DirectMessage{}
+		dm.ParentListingID = parentListingID
+		rows.Scan(
+			&dm.ID,
+			&dm.UserID,
+			&dm.Content,
+			&dm.CreateDate,
+			&dm.EndDate,
+			&dm.Title)
+		directMessages = append(directMessages, dm)
+	}
+	retVal := struct {
+		Error          string
+		DirectMessages []DirectMessage
+	}{"", directMessages}
+	data, err := json.Marshal(retVal)
+
+	if err != nil {
+		writeJsonERR(w, 500, "Json error!")
 		return
 	}
 	w.Write(data)

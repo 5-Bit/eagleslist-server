@@ -25,7 +25,7 @@ func GetSessionKey(userID int) (string, error) {
 	var isStillValid bool
 	// If the key is still valid
 	err := db.QueryRow(`
-	Select cookieInfo, (valid_til > DATE 'NOW') 
+	Select cookieInfo, (valid_til > TIMESTAMPTZ 'NOW') 
 	from sessions where userID = $1;`, userID).Scan(&key, &isStillValid)
 	if isStillValid {
 		return key, nil
@@ -67,7 +67,7 @@ func CheckSessionsKey(key string) (int, bool, error) {
 	var isStillValid bool
 	var userID int
 	err := db.QueryRow(`
-	Select userID, cookieInfo, (valid_til > DATE 'NOW') 
+	Select userID, cookieInfo, (valid_til > TIMESTAMPTZ 'NOW') 
 	from sessions where cookieInfo = $1`, key).Scan(&userID, &key, &isStillValid)
 	if err != nil {
 		return -1, false, err
