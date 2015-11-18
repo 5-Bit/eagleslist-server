@@ -52,11 +52,11 @@ type User struct {
 }
 
 type Listing struct {
-	User
 	ListingID  int
 	UserID     int
 	Title      string
 	Content    string
+	Price      string
 	CreateDate time.Time
 	EndDate    time.Time
 }
@@ -68,12 +68,14 @@ func main() {
 	fmt.Println("Starting server")
 	router.ServeFiles("/static/*filepath", http.Dir(config.StaticRoot))
 	router.HandlerFunc("GET", "/apidb/users", loadDataFromDB)
-	router.GET("/apidb/users/id/:id", userByID)
+	router.PUT("/apidb/users/id/:id", userByID)
 	router.GET("/apidb/users/handle/:user", searchUsers)
 	router.GET("/apidb/listings", allListings)
 	router.GET("/apidb/listings/:id/id", listingsByID)
 	router.POST("/apidb/users/new", newUser)
 	router.PUT("/apidb/users/auth", authUser)
+	router.POST("/apidb/listings/new", newListing)
+	//router.PUT("/apidb/validation/resend/", resendAPI)
 	router.GET("/", index)
 
 	log.Fatal(http.ListenAndServeTLS(":443", config.Cert, config.Key, router))
@@ -82,14 +84,18 @@ func main() {
 func index(w http.ResponseWriter, r *http.Request, _ httprouter.Params) {
 	fmt.Fprint(w, `API Routes:
   GET "/" -> This file.
-  GET "/static/*filepath" -> Old hard-coded api, other static assets
-  GET "/apidb/users" -> returns a list of all users
-  GET "/apidb/users/id/:id" -> returns a list of all users
-  GET "/apidb/users/handle/:user" -> searched for users that have handle's matchin said patter.
-  GET "/apidb/listings" -> Returns a list of all listings 
 
-  PUT "/apidb/users/auth" -> PUT a JSON object with "UserHandle" and "Password" fields, will return an object that has an "Error" key, and optionally an "UserID" and "SessionKey" keys
-  POST "/apidb/users/new" -> create a new users with the specified information. Returns the users's ID and a session cookie
+  GET "/static/*filepath" -> Old hard-coded api, other static assets
+
+  GET "/apidb/users" -> returns a list of all users
+  PUT "/apidb/users/id/:id" -> returns a list of all users
+  GET "/apidb/users/handle/:user" -> searched for users that have handle's matchin said patter.
+  PUT "/apidb/users/auth" -> PUT a JSON object with "UserHandle" and "Password" fields, will return an object that has an "Error" key, and optionally an "UserID" and "SessionID" keys
+  POST "/apidb/users/new" -> Create a new users with the specified information. Returns the users's ID and a session cookie
+
+  GET "/apidb/listings" -> Returns a list of all listings 
+  GET "/apidb/listings/:id/id" -> Returns a list of a single listing, based on the id in the URL.
+  POST "/apidb/listings/new" -> Create a listing from the JSON passed to it, return the id for the listing.
 	`)
 }
 
@@ -99,5 +105,6 @@ func loadDataFromDB(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		panic(err)
 	}
-	emitUsers(w, rows)
+	// FIXME: Add user permissions check
+	emitUsers(w, rows, EMIT_MANY)
 }

@@ -53,8 +53,8 @@ func GetSessionKey(userID int) (string, error) {
 	Update sessions 
 	set 
 		cookieInfo = $1,
-		valid_til = DATE 'NOW' + INTERVAL '1 WEEK'
-	where userID = $1`, key, userID)
+		valid_til = TIMESTAMPTZ 'NOW' + INTERVAL '1 WEEK'
+	where userID = $2`, key, userID)
 	if err != nil {
 		fmt.Println(err)
 		return "", err
@@ -62,14 +62,16 @@ func GetSessionKey(userID int) (string, error) {
 	return key, nil
 }
 
-func CheckSessionsKey(userID int, key string) (bool, error) {
+// Return userID, if the session is still valid, and any errors we found.
+func CheckSessionsKey(key string) (int, bool, error) {
 	var isStillValid bool
+	var userID int
 	err := db.QueryRow(`
-	Select cookieInfo, (valid_til > DATE 'NOW') 
-	from sessions where userID = $1`, userID).Scan(&key, &isStillValid)
+	Select userID, cookieInfo, (valid_til > DATE 'NOW') 
+	from sessions where cookieInfo = $1`, key).Scan(&userID, &key, &isStillValid)
 	if err != nil {
-		return false, err
+		return -1, false, err
 	}
-	return isStillValid, nil
+	return userID, isStillValid, nil
 	// If the user doesn't have any Sessions yet.
 }
