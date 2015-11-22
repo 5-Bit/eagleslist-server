@@ -18,11 +18,18 @@ import (
 	_ "github.com/lib/pq"
 )
 
+/*
+TODO: Figure out good ways to deduplicate the code below. There are a lot of variations of
+very similar code.... :(
+*/
+
 // Unmarshal JSON
 func decodeJSON(w http.ResponseWriter, r *http.Request, o interface{}) error {
 	buf := new(bytes.Buffer)
 	buf.ReadFrom(r.Body)
-	err := json.Unmarshal(buf.Bytes(), o)
+	b := buf.Bytes()
+	fmt.Println(string(b))
+	err := json.Unmarshal(b, o)
 	if err != nil {
 		fmt.Println(string(buf.Bytes()))
 		fmt.Println(err)
@@ -270,15 +277,44 @@ func allListings(w http.ResponseWriter, r *http.Request, _ httprouter.Params) {
 		title,
 		content, 
 		users.id as userID,
+		price,
+		condition,
 		createdate,
 		enddate
 	from listings
 	inner join users on users.id = listings.creatorID
-	where listings.newversionid = -1;
+	-- where listings.newversionid = -1
+	order by createdate desc;
 	`)
 	if err != nil {
 		fmt.Print(err)
 		w.WriteHeader(500)
+		return
+	}
+	emitListings(w, rows)
+}
+
+func searchListings(w http.ResponseWriter, r *http.Request, p httprouter.Params) {
+	rows, err := db.Query(`
+Select
+	 listings.id as listingID,
+	 handle,
+	 email,
+	 imageURL,
+	 title,
+	 content,
+	 users.id as userID,
+	 price,
+	 condition,
+	 createdate,
+	 enddate
+from listings
+INNER JOIN users on users.id = listings.creatorid
+where to_tsvector(title || ' ' ||  Content || ' ' || handle) @@ plainto_tsquery($1); `,
+		p[0].Value)
+	if err != nil {
+		fmt.Print(err)
+		writeJsonERR(w, 500, "Search failed!")
 		return
 	}
 	emitListings(w, rows)
@@ -299,6 +335,8 @@ func listingsByID(w http.ResponseWriter, r *http.Request, p httprouter.Params) {
 		title,
 		content, 
 		users.id as userID,
+		price,
+		condition,
 		createdate,
 		enddate
 	from listings
@@ -322,7 +360,7 @@ func emitListings(w http.ResponseWriter, rows *sql.Rows) {
 	listings := make([]listingResponse, 0)
 	for rows.Next() {
 		listing := listingResponse{}
-		rows.Scan(
+		err := rows.Scan(
 			&listing.ListingID,
 			&listing.Handle,
 			&listing.Email,
@@ -330,10 +368,18 @@ func emitListings(w http.ResponseWriter, rows *sql.Rows) {
 			&listing.Title,
 			&listing.Content,
 			&listing.UserID,
+			&listing.Price,
+			&listing.Condition,
 			&listing.CreateDate,
 			&listing.EndDate)
+		if err != nil {
+			fmt.Print(err)
+			w.WriteHeader(500)
+			return
+		}
 		listings = append(listings, listing)
 	}
+	fmt.Println(listings)
 	data, err := json.Marshal(struct{ Listings []listingResponse }{listings})
 	if err != nil {
 		fmt.Print(err)
@@ -372,30 +418,33 @@ func emitUsers(w http.ResponseWriter, rows *sql.Rows, em EMIT_TYPE) {
 	w.Write(data)
 }
 
-// Create a new listing.
-func newListing(w http.ResponseWriter, r *http.Request, p httprouter.Params) {
+// Create a new book (This should be finished later).
+func newBook(w http.ResponseWriter, r *http.Request, p httprouter.Params) {
 	req := &struct {
 		SessionID string
 		Listing   Listing
 	}{}
 
 	if err := decodeJSON(w, r, req); err != nil {
+		fmt.Println(err)
 		writeJsonERR(w, 400, "Invalid JSON")
 		return
 	}
+	fmt.Println(req)
 
 	if id, ok, err := CheckSessionsKey(req.SessionID); !ok || err != nil {
+		fmt.Println(err)
 		writeJsonERR(w, 400, "Unauthorized")
 		return
 	} else {
-		req.Listing.UserID = id
+		req.Listing.UserID.Set(int64(id))
 	}
 
 	var listingID int
 	err := db.QueryRow(`
 	Insert into listings (
 		oldversionid, newversionid, creatorid, content,
-		createdate, title, price
+		createdate, title, price, condition
 	) values (
 		-1,         -- oldversionid
 		-1,         -- newversionid
@@ -403,13 +452,14 @@ func newListing(w http.ResponseWriter, r *http.Request, p httprouter.Params) {
 		$2,         -- content
 		TIMESTAMPTZ 'NOW', -- createdate
 		$3,         -- title
-		$4          -- price
-	)
-	RETURNING ID
+		$4,         -- price
+		$5          -- condition
+	) RETURNING ID;
 	`, req.Listing.UserID,
 		req.Listing.Content,
 		req.Listing.Title,
-		req.Listing.Price).Scan(&listingID)
+		req.Listing.Price,
+		req.Listing.Condition).Scan(&listingID)
 
 	if err != nil {
 		fmt.Println(err)
@@ -428,8 +478,237 @@ func newListing(w http.ResponseWriter, r *http.Request, p httprouter.Params) {
 	w.Write(data)
 }
 
+// Create a new listing.
+func newListing(w http.ResponseWriter, r *http.Request, p httprouter.Params) {
+	req := &struct {
+		SessionID string
+		Listing   Listing
+	}{}
+
+	if err := decodeJSON(w, r, req); err != nil {
+		fmt.Println(err)
+		writeJsonERR(w, 400, "Invalid JSON")
+		return
+	}
+	fmt.Println(req)
+
+	if id, ok, err := CheckSessionsKey(req.SessionID); !ok || err != nil {
+		fmt.Println(err)
+		writeJsonERR(w, 400, "Unauthorized")
+		return
+	} else {
+		req.Listing.UserID.Set(int64(id))
+	}
+
+	var listingID int
+	err := db.QueryRow(`
+	Insert into listings (
+		oldversionid, newversionid, creatorid, content,
+		createdate, title, price, condition
+	) values (
+		-1,         -- oldversionid
+		-1,         -- newversionid
+		$1,         -- creatorid
+		$2,         -- content
+		TIMESTAMPTZ 'NOW', -- createdate
+		$3,         -- title
+		$4,         -- price
+		$5          -- condition
+	) RETURNING ID;
+	`, req.Listing.UserID,
+		req.Listing.Content,
+		req.Listing.Title,
+		req.Listing.Price,
+		req.Listing.Condition).Scan(&listingID)
+
+	if err != nil {
+		fmt.Println(err)
+		writeJsonERR(w, 500, "UNKNOWN ERROR!")
+		return
+	}
+	retVal := &struct {
+		Error  string
+		PostID int
+	}{"", listingID}
+	data, err := json.Marshal(retVal)
+	if err != nil {
+		writeJsonERR(w, 500, "UKNOWN error...")
+		return
+	}
+	w.Write(data)
+}
+
+// Delete a comment.
+func deleteCommentOnListing(w http.ResponseWriter, r *http.Request, p httprouter.Params) {
+	commentID, err := strconv.Atoi(p[0].Value)
+	if err != nil {
+		writeJsonERR(w, 400, "Invalid comment ID in URL")
+		return
+	}
+	auth := &struct{ SessionID string }{}
+	if err := decodeJSON(w, r, auth); err != nil {
+		writeJsonERR(w, 400, "Invalid JSON")
+		return
+	}
+
+	var userID int
+	if id, ok, err := CheckSessionsKey(auth.SessionID); !ok || err != nil {
+		writeJsonERR(w, 400, "Unauthorized")
+		return
+	} else {
+		userID = id
+	}
+	var creatorID int
+	err = db.QueryRow(`
+	Select creatorid from comments where id = $1;
+	`, commentID).Scan(&creatorID)
+	if err == sql.ErrNoRows {
+		writeJsonERR(w, 400, "Listing does not exist")
+		return
+	} else if creatorID != userID {
+		writeJsonERR(w, 400, "Not authorized!")
+		return
+	}
+	if err != nil {
+		writeJsonERR(w, 500, "UK ERR")
+	}
+	_, err = db.Exec(`Update comments set endDate = TIMESTAMPTZ 'NOW' where id = $1`)
+	if err != nil {
+		writeJsonERR(w, 500, "UNKER!")
+		return
+	}
+}
+
+// Add a comment to a listing.
+func commentToListing(w http.ResponseWriter, r *http.Request, p httprouter.Params) {
+	parentListingID, err := strconv.Atoi(p[0].Value)
+	if err != nil {
+		writeJsonERR(w, 400, "Invalid listing ID in URL")
+		return
+	}
+	req := &struct {
+		SessionID string
+		Comment   Comment
+	}{}
+
+	if err := decodeJSON(w, r, req); err != nil {
+		writeJsonERR(w, 400, "Invalid JSON")
+		return
+	}
+
+	if id, ok, err := CheckSessionsKey(req.SessionID); !ok || err != nil {
+		writeJsonERR(w, 400, "Unauthorized")
+		return
+	} else {
+		req.Comment.UserID.Set(int64(id))
+	}
+
+	err = db.QueryRow(`
+	Select id from listings where id = $1;
+	`, parentListingID).Scan(&parentListingID)
+	if err == sql.ErrNoRows {
+		writeJsonERR(w, 400, "Listing does not exist")
+		return
+	}
+	if err != nil {
+		writeJsonERR(w, 500, "UK ERR")
+	}
+
+	var listingID int
+	err = db.QueryRow(`
+	Insert into comments (
+		oldversionid, newversionid, creatorid, content,
+		createdate, parent_listing_id 
+	) values (
+		-1,         -- oldversionid
+		-1,         -- newversionid
+		$1,         -- creatorid
+		$2,         -- content
+		TIMESTAMPTZ 'NOW', -- createdate
+		$3          -- parent_listing_id
+	)
+	RETURNING ID
+	`, req.Comment.UserID,
+		req.Comment.Content,
+		parentListingID).Scan(&listingID)
+
+	if err != nil {
+		fmt.Println(err)
+		writeJsonERR(w, 500, "UNKNOWN ERROR!!")
+		return
+	}
+	retVal := &struct {
+		Error string
+	}{""}
+	data, err := json.Marshal(retVal)
+	if err != nil {
+		writeJsonERR(w, 500, "UKNOWN error...")
+		return
+	}
+	w.Write(data)
+}
+
+type commentResponse struct {
+	UserName NullString
+	Comment
+}
+
+// /apidb/listings/:id/getdirectmessages
+func getCommentsForListing(w http.ResponseWriter, r *http.Request, p httprouter.Params) {
+	parentListingID, err := strconv.Atoi(p[0].Value)
+	if err != nil {
+		writeJsonERR(w, 400, "Invalid listing ID in URL")
+		return
+	}
+	rows, err := db.Query(`
+		Select
+			comments.id, 
+			creatorID,
+			content,
+			createDate,
+			enddate,
+			handle
+		from comments
+		inner join users on CreatorID = users.id
+		where parent_listing_id = $1
+		and enddate is not null
+		`, parentListingID)
+	if err != nil {
+		fmt.Println(err)
+		writeJsonERR(w, 500, "Unknown error!!!")
+		return
+	}
+
+	comments := make([]commentResponse, 0)
+	for rows.Next() {
+		comment := commentResponse{}
+		comment.ParentListingID.Set(int64(parentListingID))
+		err = rows.Scan(
+			&comment.ID,
+			&comment.UserID,
+			&comment.Content,
+			&comment.CreateDate,
+			&comment.EndDate,
+			&comment.UserName)
+		if err != nil {
+			fmt.Println(err)
+		}
+		comments = append(comments, comment)
+	}
+	retVal := struct {
+		Error    string
+		Comments []commentResponse
+	}{"", comments}
+	data, err := json.Marshal(retVal)
+
+	if err != nil {
+		writeJsonERR(w, 500, "Json error!")
+		return
+	}
+	w.Write(data)
+}
+
 // Attach a DM to a listing.
-// /apidb/listings/:id/directmessage
 func directMessageToListing(w http.ResponseWriter, r *http.Request, p httprouter.Params) {
 	parentListingID, err := strconv.Atoi(p[0].Value)
 	if err != nil {
@@ -450,7 +729,7 @@ func directMessageToListing(w http.ResponseWriter, r *http.Request, p httprouter
 		writeJsonERR(w, 400, "Unauthorized")
 		return
 	} else {
-		req.DirectMessage.UserID = id
+		req.DirectMessage.UserID.Set(int64(id))
 	}
 
 	err = db.QueryRow(`
@@ -468,20 +747,18 @@ func directMessageToListing(w http.ResponseWriter, r *http.Request, p httprouter
 	err = db.QueryRow(`
 	Insert into directmessages (
 		oldversionid, newversionid, creatorid, content,
-		createdate, title, parent_listing_id 
+		createdate, parent_listing_id 
 	) values (
 		-1,         -- oldversionid
 		-1,         -- newversionid
 		$1,         -- creatorid
 		$2,         -- content
 		TIMESTAMPTZ 'NOW', -- createdate
-		$3,         -- title
-		$4          -- parent_listing_id
+		$3          -- parent_listing_id
 	)
 	RETURNING ID
 	`, req.DirectMessage.UserID,
 		req.DirectMessage.Content,
-		req.DirectMessage.Title,
 		parentListingID).Scan(&listingID)
 
 	if err != nil {
@@ -542,12 +819,12 @@ func getDirectMessagesForListing(w http.ResponseWriter, r *http.Request, p httpr
 			creatorID,
 			content,
 			createDate,
-			enddate,
-			title,
+			enddate
 		from directmessages
 		where parent_listing_id = $1
 		`, parentListingID)
 	if err != nil {
+		fmt.Println(err)
 		writeJsonERR(w, 500, "Unknown error!!!")
 		return
 	}
@@ -555,14 +832,79 @@ func getDirectMessagesForListing(w http.ResponseWriter, r *http.Request, p httpr
 	directMessages := make([]DirectMessage, 0)
 	for rows.Next() {
 		dm := DirectMessage{}
-		dm.ParentListingID = parentListingID
+		dm.ParentListingID.Set(int64(parentListingID))
 		rows.Scan(
 			&dm.ID,
 			&dm.UserID,
 			&dm.Content,
 			&dm.CreateDate,
-			&dm.EndDate,
-			&dm.Title)
+			&dm.EndDate)
+		directMessages = append(directMessages, dm)
+	}
+	retVal := struct {
+		Error          string
+		DirectMessages []DirectMessage
+	}{"", directMessages}
+	data, err := json.Marshal(retVal)
+
+	if err != nil {
+		writeJsonERR(w, 500, "Json error!")
+		return
+	}
+	w.Write(data)
+}
+
+// Get all the direct messages for a given user.
+func getDirectMessagesForUser(w http.ResponseWriter, r *http.Request, p httprouter.Params) {
+	auth := &struct {
+		SessionID string
+	}{}
+
+	if err := decodeJSON(w, r, auth); err != nil {
+		writeJsonERR(w, 400, "Invalid JSON")
+		return
+	}
+
+	// Check to make sure that the listing that all the direct messages are
+	// being listed for belongs to the user in question.
+	var userID int
+	var ok bool
+	var err error
+	// Check that authentication is working.
+	if userID, ok, err = CheckSessionsKey(auth.SessionID); !ok || err != nil {
+		fmt.Println(err)
+		writeJsonERR(w, 400, "Invalid auth token")
+		return
+	}
+	rows, err := db.Query(`
+		Select
+			directmessages.id, 
+			directmessages.creatorID,
+			directmessages.content,
+			directmessages.parent_listing_id,
+			directmessages.createDate,
+			directmessages.enddate
+		from directmessages
+		inner join listings on directmessages.parent_listing_id = listings.id
+		where listings.creatorID = $1
+		`, userID)
+	if err != nil {
+		fmt.Println(err)
+		writeJsonERR(w, 500, "Unknown error!!!")
+		return
+	}
+
+	directMessages := make([]DirectMessage, 0)
+	for rows.Next() {
+		dm := DirectMessage{}
+		// dm.ParentListingID = parentListingID
+		rows.Scan(
+			&dm.ID,
+			&dm.UserID,
+			&dm.Content,
+			&dm.ParentListingID,
+			&dm.CreateDate,
+			&dm.EndDate)
 		directMessages = append(directMessages, dm)
 	}
 	retVal := struct {
