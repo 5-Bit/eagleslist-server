@@ -62,13 +62,36 @@ func GetSessionKey(userID int) (string, error) {
 	return key, nil
 }
 
+var (
+	ErrUserNotValidatedYet = fmt.Errorf("User not validated")
+)
+
+func CheckSessionHasValidated(key string) (int, bool, error) {
+	var hasValidated bool
+	var userID int
+	err := db.QueryRow(`
+		Select
+			sessions.userID,
+			cookieInfo,
+			isValidated
+		from sessions 
+		left join emailvalidation as evalid on evalid.userid = sessions.userid
+		where cookieinfo = $1
+	`, key).Scan(&userID, &key, &hasValidated)
+	if err != nil {
+		return -1, false, err
+	}
+	return userID, hasValidated, nil
+}
+
 // Return userID, if the session is still valid, and any errors we found.
 func CheckSessionsKey(key string) (int, bool, error) {
 	var isStillValid bool
 	var userID int
 	err := db.QueryRow(`
 	Select userID, cookieInfo, (valid_til > TIMESTAMPTZ 'NOW') 
-	from sessions where cookieInfo = $1`, key).Scan(&userID, &key, &isStillValid)
+	from sessions where cookieInfo = $1
+	`, key).Scan(&userID, &key, &isStillValid)
 	if err != nil {
 		return -1, false, err
 	}

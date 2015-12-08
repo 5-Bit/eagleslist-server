@@ -187,6 +187,40 @@ func authUser(w http.ResponseWriter, r *http.Request, _ httprouter.Params) {
 	w.Write(data)
 }
 
+func editProfile(w http.ResponseWriter, r *http.Request, _ httprouter.Params) {
+	auth := &struct {
+		SessionID string
+		User      User
+	}{}
+	var userID int
+
+	if err := decodeJSON(w, r, auth); err != nil {
+		writeJsonERR(w, 400, "Invalid JSON")
+		return
+	}
+
+	if id, ok, err := CheckSessionsKey(auth.SessionID); !ok || err != nil {
+		writeJsonERR(w, 400, "Not validated!")
+		return
+	} else {
+		userID = id
+	}
+	_, err := db.Exec(`
+	Update users
+	set 
+		handle = $2,
+		biography = $3,
+		imageurl = $4
+	where id = $1
+	`, userID, auth.User.Handle, auth.User.Bio, auth.User.ImageURL)
+	if err != nil {
+		fmt.Println(err)
+		writeJsonERR(w, 500, "Unable to save changes to user profile")
+		return
+	}
+	writeJsonERR(w, 200, "")
+}
+
 func invalidateSession(w http.ResponseWriter, r *http.Request, p httprouter.Params) {
 	// TODO: finish this code
 	auth := &struct {
@@ -263,6 +297,53 @@ func verifyUser(w http.ResponseWriter, r *http.Request, p httprouter.Params) {
 	fmt.Fprint(w, pageData)
 }
 
+func listingsForUserID(w http.ResponseWriter, r *http.Request, p httprouter.Params) {
+	req := &struct {
+		SessionID string
+	}{}
+	if err := decodeJSON(w, r, req); err != nil {
+		fmt.Println(err)
+		writeJsonERR(w, 400, "Invalid JSON")
+		return
+	}
+
+	if _, ok, err := CheckSessionsKey(req.SessionID); !ok || err != nil {
+		fmt.Println(err)
+		writeJsonERR(w, 400, "Unauthorized")
+		return
+	}
+	userID, err := strconv.Atoi(p[0].Value)
+	if err != nil {
+		writeJsonERR(w, 500, "Invalid user ID")
+		return
+	}
+
+	rows, err := db.Query(`
+	Select 
+		listings.id as listingID,
+		handle,
+		email,
+		imageURL,
+		title,
+		content, 
+		users.id as userID,
+		price,
+		condition,
+		createdate,
+		enddate
+	from listings
+	inner join users on users.id = listings.creatorID
+	where listings.creatorID = $1 and endDate is NULL
+	order by createdate desc;
+	`, userID)
+	if err != nil {
+		fmt.Print(err)
+		w.WriteHeader(500)
+		return
+	}
+	emitListings(w, rows)
+}
+
 // TODO: When creating login requests,
 // make sure to have a special response for unvalidated users.
 // func tryLogin
@@ -283,7 +364,7 @@ func allListings(w http.ResponseWriter, r *http.Request, _ httprouter.Params) {
 		enddate
 	from listings
 	inner join users on users.id = listings.creatorID
-	-- where listings.newversionid = -1
+	where listings.newversionid = -1 and endDate is NULL
 	order by createdate desc;
 	`)
 	if err != nil {
@@ -310,7 +391,10 @@ Select
 	 enddate
 from listings
 INNER JOIN users on users.id = listings.creatorid
-where to_tsvector(title || ' ' ||  Content || ' ' || handle) @@ plainto_tsquery($1); `,
+where to_tsvector(title || ' ' ||  Content || ' ' || handle) @@ plainto_tsquery($1)
+	and endDate is NULL
+order by createdate desc;
+`,
 		p[0].Value)
 	if err != nil {
 		fmt.Print(err)
@@ -341,7 +425,8 @@ func listingsByID(w http.ResponseWriter, r *http.Request, p httprouter.Params) {
 		enddate
 	from listings
 	inner join users on users.id = listings.creatorID
-	where listings.newversionid = -1 and listings.id = $1;
+	where listings.newversionid = -1 and listings.id = $1
+	order by createdate desc;
 	`, id)
 	if err != nil {
 		fmt.Print(err)
@@ -478,6 +563,54 @@ func newBook(w http.ResponseWriter, r *http.Request, p httprouter.Params) {
 	w.Write(data)
 }
 
+func deleteListing(w http.ResponseWriter, r *http.Request, p httprouter.Params) {
+	auth := &struct {
+		SessionID string
+	}{}
+	listingID, err := strconv.Atoi(p[0].Value)
+	if err != nil {
+		writeJsonERR(w, 400, "Invalid id")
+		return
+	}
+
+	if err = decodeJSON(w, r, auth); err != nil {
+		fmt.Println(err)
+		writeJsonERR(w, 400, "Invalid JSON")
+		return
+	}
+
+	var userID int
+	if id, ok, err := CheckSessionsKey(auth.SessionID); !ok || err != nil {
+		fmt.Println(err)
+		writeJsonERR(w, 400, "User not validated")
+		return
+	} else {
+		userID = id
+	}
+
+	var creatorID int
+	err = db.QueryRow(`
+	Select creatorid from listings where id = $1;
+	`, listingID).Scan(&creatorID)
+	if err == sql.ErrNoRows {
+		writeJsonERR(w, 400, "Listing does not exist")
+		return
+	} else if creatorID != userID {
+		writeJsonERR(w, 400, "Not authorized!")
+		return
+	}
+	_, err = db.Exec(`
+	Update listings
+	set endDate = TIMESTAMPTZ 'NOW'
+	where ID = $1
+	`, listingID)
+	if err != nil {
+		writeJsonERR(w, 400, "Invalid id")
+		return
+	}
+	writeJsonERR(w, 200, "")
+}
+
 // Create a new listing.
 func newListing(w http.ResponseWriter, r *http.Request, p httprouter.Params) {
 	req := &struct {
@@ -499,7 +632,11 @@ func newListing(w http.ResponseWriter, r *http.Request, p httprouter.Params) {
 	} else {
 		req.Listing.UserID.Set(int64(id))
 	}
-
+	if _, ok, err := CheckSessionHasValidated(req.SessionID); !ok || err != nil {
+		fmt.Println(err)
+		writeJsonERR(w, 400, "User not validated")
+		return
+	}
 	var listingID int
 	err := db.QueryRow(`
 	Insert into listings (
@@ -558,6 +695,11 @@ func deleteCommentOnListing(w http.ResponseWriter, r *http.Request, p httprouter
 	} else {
 		userID = id
 	}
+	if _, ok, err := CheckSessionHasValidated(auth.SessionID); !ok || err != nil {
+		fmt.Println(err)
+		writeJsonERR(w, 400, "User not validated")
+		return
+	}
 	var creatorID int
 	err = db.QueryRow(`
 	Select creatorid from comments where id = $1;
@@ -572,11 +714,13 @@ func deleteCommentOnListing(w http.ResponseWriter, r *http.Request, p httprouter
 	if err != nil {
 		writeJsonERR(w, 500, "UK ERR")
 	}
-	_, err = db.Exec(`Update comments set endDate = TIMESTAMPTZ 'NOW' where id = $1`)
+	_, err = db.Exec(`Update comments set endDate = TIMESTAMPTZ 'NOW' where id = $1`, commentID)
 	if err != nil {
+		fmt.Println(err)
 		writeJsonERR(w, 500, "UNKER!")
 		return
 	}
+	writeJsonERR(w, 200, "")
 }
 
 // Add a comment to a listing.
@@ -601,6 +745,11 @@ func commentToListing(w http.ResponseWriter, r *http.Request, p httprouter.Param
 		return
 	} else {
 		req.Comment.UserID.Set(int64(id))
+	}
+	if _, ok, err := CheckSessionHasValidated(req.SessionID); !ok || err != nil {
+		fmt.Println(err)
+		writeJsonERR(w, 400, "User not validated")
+		return
 	}
 
 	err = db.QueryRow(`
@@ -671,7 +820,7 @@ func getCommentsForListing(w http.ResponseWriter, r *http.Request, p httprouter.
 		from comments
 		inner join users on CreatorID = users.id
 		where parent_listing_id = $1
-		and enddate is not null
+		and enddate is null
 		`, parentListingID)
 	if err != nil {
 		fmt.Println(err)
@@ -730,6 +879,11 @@ func directMessageToListing(w http.ResponseWriter, r *http.Request, p httprouter
 		return
 	} else {
 		req.DirectMessage.UserID.Set(int64(id))
+	}
+	if _, ok, err := CheckSessionHasValidated(req.SessionID); !ok || err != nil {
+		fmt.Println(err)
+		writeJsonERR(w, 400, "User not validated")
+		return
 	}
 
 	err = db.QueryRow(`
@@ -887,6 +1041,7 @@ func getDirectMessagesForUser(w http.ResponseWriter, r *http.Request, p httprout
 		from directmessages
 		inner join listings on directmessages.parent_listing_id = listings.id
 		where listings.creatorID = $1
+		and endDate is null
 		`, userID)
 	if err != nil {
 		fmt.Println(err)

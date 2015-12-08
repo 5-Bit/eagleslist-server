@@ -53,6 +53,7 @@ func main() {
 	router.GET("/verify/:verifyToken", verifyUser)
 	router.GET("/apidb/listings", allListings)
 	router.GET("/apidb/listings/:id/id", listingsByID)
+	router.PUT("/apidb/listings/:id/delete", deleteListing)
 	router.POST("/apidb/listings/new", newListing)
 	router.GET("/apidb/searchlistings/:search", searchListings)
 	// Direct message routes
@@ -64,9 +65,13 @@ func main() {
 	router.GET("/apidb/listingcomments/:id/getAll", getCommentsForListing)
 	router.PUT("/apidb/deletecomment/:id/", deleteCommentOnListing)
 
+	// Profile route
+	router.PUT("/apidb/editProfile", editProfile)
+
 	// Routes for users.
 	router.GET("/apidb/users/handle/:user", searchUsers)
 	router.PUT("/apidb/users/id/:id", userByID)
+	router.PUT("/apidb/users/listings/:id", listingsForUserID)
 	router.PUT("/apidb/users/directmessages/", getDirectMessagesForListing)
 	router.PUT("/apidb/users/auth", authUser)
 	router.PUT("/apidb/users/logout", invalidateSession)
@@ -90,11 +95,11 @@ func index(w http.ResponseWriter, r *http.Request, _ httprouter.Params) {
   GET "/apidb/users/handle/:user" -> searched for users that have handle's matchin said patter.
   PUT "/apidb/users/auth" -> PUT a JSON object with "UserHandle" and "Password" fields, will return an object that has an "Error" key, and optionally an "UserID" and "SessionID" keys
   PUT "/apidb/users/logout" -> PUT a JSON object with the session key to invalidate that session key.
+  PUT "/apidb/users/listings/:id" -> PUT a JSON object with a session key. Returns a array of listings attached to the user indicated
 
 
   PUT "/apidb/users/directmessages" -> PUT a JSON object with the session key to get a list of all direct messages for that user.
   POST "/apidb/users/new" -> Create a new users with the specified information.  Returns the users's ID and a session cookie
-
 
   GET "/apidb/searchlistings/:search" -> GET, returns an error code and a list of listings that match this search.
   POST "/apidb/listing/:id/adddirectmessage" -> POST JSON containing a SessionID and DirectMessage object to add to the listingID. Returns an object containing an error, if any happened.
@@ -103,9 +108,10 @@ func index(w http.ResponseWriter, r *http.Request, _ httprouter.Params) {
 
   GET "/apidb/listings" -> Returns a list of all listings 
   GET "/apidb/listings/:id/id" -> Returns a list of a single listing, based on the id in the URL.
+  PUT "/apidb/listings/:id/delete" -> POST JSON containing a SessionID. Deletes the listing at with the given id.
   POST "/apidb/listingcomments/:id/add" -> POST JSON containing a SessionID and a Comment object that contains a Content field, returns 
   PUT "/apidb/listingcomments/:id/getAll" -> POST JSON containing a SessionID. Returns an object that has Error and Comments keys.
-  *new* PUT "/apidb/deletecomment/:id/" -> PUT a JSON contiaining a SessionID. 
+  PUT "/apidb/deletecomment/:id/" -> PUT a JSON contiaining a SessionID. 
 
 
   POST "/apidb/listings/new" -> Create a listing from the JSON passed to it, return the id for the listing.
